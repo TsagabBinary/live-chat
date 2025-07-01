@@ -112,9 +112,19 @@ fastify.post('/api/new-message', async (request, reply) => {
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
-    const [action, conversationId] = interaction.customId.split('_');
+    // Parse customId dengan benar - format: quick_reply_<conversationId> atau close_ticket_<conversationId>
+    const customIdParts = interaction.customId.split('_');
+    let conversationId;
     
-    if (action === 'quick' && interaction.customId.includes('reply')) {
+    if (interaction.customId.startsWith('quick_reply_')) {
+        conversationId = interaction.customId.replace('quick_reply_', '');
+    } else if (interaction.customId.startsWith('close_ticket_')) {
+        conversationId = interaction.customId.replace('close_ticket_', '');
+    }
+    
+    console.log(`🔍 Button pressed: ${interaction.customId}, Extracted ConversationID: ${conversationId}`);
+    
+    if (interaction.customId.startsWith('quick_reply_')) {
         // Buat modal untuk quick reply
         const modal = new ModalBuilder()
             .setCustomId(`reply_modal_${conversationId}`)
@@ -132,8 +142,7 @@ client.on('interactionCreate', async interaction => {
 
         await interaction.showModal(modal);
     }
-    
-    if (action === 'close' && interaction.customId.includes('ticket')) {
+    if (interaction.customId.startsWith('close_ticket_')) {
         // Tutup tiket
         activeConversations.delete(conversationId);
         
@@ -267,6 +276,14 @@ async function sendReplyToDatabase(conversationId, supporterId, replyContent, in
             throw new Error('Data tidak lengkap untuk menyimpan ke database');
         }
 
+        // Validasi UUID format jika conversation_id adalah UUID
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(conversationId)) {
+            console.log(`⚠️ ConversationID bukan UUID format: ${conversationId}`);
+            // Jika bukan UUID, coba gunakan sebagai string biasa
+            // Atau convert ke UUID jika diperlukan
+        }
+
         // Cek koneksi Supabase
         const { data: testData, error: testError } = await supabase
             .from('messages')
@@ -281,7 +298,7 @@ async function sendReplyToDatabase(conversationId, supporterId, replyContent, in
         // Prepare data dengan timestamp
         const messageData = {
             conversation_id: conversationId,
-            sender_id: supporterId,
+            sender_id: supporterId.toString(), // Pastikan sender_id adalah string
             sender_type: 'support_agent',
             content: replyContent,
             created_at: new Date().toISOString()
@@ -301,7 +318,9 @@ async function sendReplyToDatabase(conversationId, supporterId, replyContent, in
             
             // Buat pesan error yang lebih informatif
             let errorMsg = 'Gagal menyimpan balasan ke database.';
-            if (error.code) {
+            if (error.code === '22P02') {
+                errorMsg += ' (Format UUID tidak valid - pastikan Conversation ID benar)';
+            } else if (error.code) {
                 errorMsg += ` (Error Code: ${error.code})`;
             }
             if (error.details) {
