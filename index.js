@@ -47,7 +47,8 @@ fastify.post('/api/new-message', async (request, reply) => {
 
     if (!conversationId || !userId || !messageContent) {
         return reply.code(400).send({ error: 'Data tidak lengkap' });
-    }
+    // Command !help
+    if (message.content === '!help') {
 
     try {
         const channel = await client.channels.fetch(SUPPORT_CHANNEL_ID);
@@ -210,8 +211,40 @@ client.on('messageCreate', async message => {
         message.reply({ embeds: [embed] });
     }
 
-    // Command !help
-    if (message.content === '!help') {
+    // Command !debug untuk debugging database
+    if (message.content === '!debug') {
+        if (!message.member.permissions.has('ADMINISTRATOR')) {
+            message.reply('❌ Command ini hanya untuk administrator.');
+            return;
+        }
+
+        const debugEmbed = new EmbedBuilder()
+            .setColor('#ffff00')
+            .setTitle('🔧 Debug Information')
+            .addFields(
+                { name: '🔗 Supabase URL', value: supabaseUrl ? '✅ Set' : '❌ Not Set', inline: true },
+                { name: '🔑 Supabase Key', value: supabaseAnonKey ? '✅ Set' : '❌ Not Set', inline: true },
+                { name: '💾 Active Conversations', value: activeConversations.size.toString(), inline: true }
+            );
+
+        // Test koneksi database
+        try {
+            const { data, error } = await supabase
+                .from('messages')
+                .select('id')
+                .limit(1);
+
+            if (error) {
+                debugEmbed.addFields({ name: '🔴 Database Test', value: `Error: ${error.message}`, inline: false });
+            } else {
+                debugEmbed.addFields({ name: '🟢 Database Test', value: 'Connection OK', inline: false });
+            }
+        } catch (testError) {
+            debugEmbed.addFields({ name: '🔴 Database Test', value: `Exception: ${testError.message}`, inline: false });
+        }
+
+        message.reply({ embeds: [debugEmbed] });
+    }
         const helpEmbed = new EmbedBuilder()
             .setColor('#00ff00')
             .setTitle('🤖 Bantuan Support Bot')
@@ -227,47 +260,97 @@ client.on('messageCreate', async message => {
     }
 });
 
-// Fungsi untuk mengirim balasan ke database
+// Fungsi untuk mengirim balasan ke database dengan error handling yang lebih baik
 async function sendReplyToDatabase(conversationId, supporterId, replyContent, interaction) {
+    console.log(`🔄 Mencoba mengirim balasan ke database...`);
+    console.log(`📊 Data: ConvID=${conversationId}, SupporterID=${supporterId}, Content=${replyContent.substring(0, 50)}...`);
+    
     try {
+        // Validasi input
+        if (!conversationId || !supporterId || !replyContent) {
+            throw new Error('Data tidak lengkap untuk menyimpan ke database');
+        }
+
+        // Cek koneksi Supabase
+        const { data: testData, error: testError } = await supabase
+            .from('messages')
+            .select('id')
+            .limit(1);
+
+        if (testError) {
+            console.error('❌ Koneksi Supabase gagal:', testError);
+            throw new Error(`Koneksi database gagal: ${testError.message}`);
+        }
+
+        // Prepare data dengan timestamp
+        const messageData = {
+            conversation_id: conversationId,
+            sender_id: supporterId,
+            sender_type: 'support_agent',
+            content: replyContent,
+            created_at: new Date().toISOString()
+        };
+
+        console.log('📝 Data yang akan disimpan:', messageData);
+
+        // Insert ke database
         const { data, error } = await supabase
             .from('messages')
-            .insert({
-                conversation_id: conversationId,
-                sender_id: supporterId,
-                sender_type: 'support_agent',
-                content: replyContent
-            })
+            .insert(messageData)
             .select();
 
         if (error) {
-            console.error('❌ Error database:', error);
-            const errorMsg = 'Gagal menyimpan balasan ke database.';
+            console.error('❌ Error saat insert:', error);
+            console.error('❌ Error details:', JSON.stringify(error, null, 2));
+            
+            // Buat pesan error yang lebih informatif
+            let errorMsg = 'Gagal menyimpan balasan ke database.';
+            if (error.code) {
+                errorMsg += ` (Error Code: ${error.code})`;
+            }
+            if (error.details) {
+                errorMsg += ` Detail: ${error.details}`;
+            }
+            
+            const errorEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('❌ Database Error')
+                .addFields(
+                    { name: '🆔 Conversation ID', value: conversationId, inline: true },
+                    { name: '👤 Support Agent', value: `<@${supporterId}>`, inline: true },
+                    { name: '🔴 Error', value: errorMsg, inline: false },
+                    { name: '📝 Pesan (Backup)', value: replyContent.substring(0, 1000), inline: false }
+                )
+                .setFooter({ text: 'Pesan disimpen sementara. Coba lagi atau hubungi admin.' })
+                .setTimestamp();
             
             if (interaction.isModalSubmit?.()) {
-                await interaction.reply({ content: errorMsg, ephemeral: true });
+                await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
             } else {
-                await interaction.reply(errorMsg);
+                await interaction.reply({ embeds: [errorEmbed] });
             }
             return;
         }
+
+        // Berhasil menyimpan
+        console.log('✅ Balasan berhasil disimpan:', data);
 
         // Update last activity
         if (activeConversations.has(conversationId)) {
             activeConversations.get(conversationId).lastActivity = new Date();
         }
 
-        console.log(`📤 Balasan terkirim ke Conversation ${conversationId}`);
-
         // Buat embed konfirmasi
         const confirmEmbed = new EmbedBuilder()
             .setColor('#00ff00')
-            .setTitle('✅ Balasan Terkirim')
+            .setTitle('✅ Balasan Berhasil Terkirim')
             .addFields(
                 { name: '🆔 Conversation ID', value: conversationId, inline: true },
                 { name: '👤 Support Agent', value: `<@${supporterId}>`, inline: true },
-                { name: '📝 Pesan', value: replyContent, inline: false }
+                { name: '📝 Pesan', value: replyContent.length > 500 ? replyContent.substring(0, 500) + '...' : replyContent, inline: false },
+                { name: '🕐 Waktu', value: new Date().toLocaleString('id-ID'), inline: true }
             )
+            .setFooter({ text: `Message ID: ${data[0]?.id || 'Unknown'}` })
             .setTimestamp();
 
         if (interaction.isModalSubmit?.()) {
@@ -278,13 +361,26 @@ async function sendReplyToDatabase(conversationId, supporterId, replyContent, in
         }
 
     } catch (dbError) {
-        console.error('❌ Database error:', dbError);
-        const errorMsg = 'Terjadi kesalahan database.';
+        console.error('❌ Unexpected database error:', dbError);
+        console.error('❌ Stack trace:', dbError.stack);
+        
+        // Buat pesan error yang user-friendly
+        const errorEmbed = new EmbedBuilder()
+            .setColor('#ff0000')
+            .setTitle('❌ Terjadi Kesalahan')
+            .addFields(
+                { name: '🆔 Conversation ID', value: conversationId, inline: true },
+                { name: '👤 Support Agent', value: `<@${supporterId}>`, inline: true },
+                { name: '🔴 Error', value: dbError.message || 'Unknown error', inline: false },
+                { name: '📝 Pesan (Backup)', value: replyContent.substring(0, 1000), inline: false }
+            )
+            .setDescription('Silakan coba lagi atau hubungi administrator. Pesan Anda telah dicatat.')
+            .setTimestamp();
         
         if (interaction.isModalSubmit?.()) {
-            await interaction.reply({ content: errorMsg, ephemeral: true });
+            await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
         } else {
-            await interaction.reply(errorMsg);
+            await interaction.reply({ embeds: [errorEmbed] });
         }
     }
 }
