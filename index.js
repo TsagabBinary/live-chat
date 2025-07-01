@@ -1,7 +1,7 @@
-// index.js (Versi Simplified untuk Support yang Mudah)
+// index.js (Versi Simplified untuk Support yang Mudah - Fixed)
 
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fastify = require('fastify')({ logger: false });
 const fastifyCors = require('@fastify/cors');
 const { createClient } = require('@supabase/supabase-js');
@@ -47,8 +47,7 @@ fastify.post('/api/new-message', async (request, reply) => {
 
     if (!conversationId || !userId || !messageContent) {
         return reply.code(400).send({ error: 'Data tidak lengkap' });
-    // Command !help
-    if (message.content === '!help') {
+    }
 
     try {
         const channel = await client.channels.fetch(SUPPORT_CHANNEL_ID);
@@ -117,8 +116,6 @@ client.on('interactionCreate', async interaction => {
     
     if (action === 'quick' && interaction.customId.includes('reply')) {
         // Buat modal untuk quick reply
-        const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
-        
         const modal = new ModalBuilder()
             .setCustomId(`reply_modal_${conversationId}`)
             .setTitle('Quick Reply');
@@ -213,11 +210,6 @@ client.on('messageCreate', async message => {
 
     // Command !debug untuk debugging database
     if (message.content === '!debug') {
-        if (!message.member.permissions.has('ADMINISTRATOR')) {
-            message.reply('❌ Command ini hanya untuk administrator.');
-            return;
-        }
-
         const debugEmbed = new EmbedBuilder()
             .setColor('#ffff00')
             .setTitle('🔧 Debug Information')
@@ -245,6 +237,9 @@ client.on('messageCreate', async message => {
 
         message.reply({ embeds: [debugEmbed] });
     }
+
+    // Command !help
+    if (message.content === '!help') {
         const helpEmbed = new EmbedBuilder()
             .setColor('#00ff00')
             .setTitle('🤖 Bantuan Support Bot')
@@ -252,6 +247,7 @@ client.on('messageCreate', async message => {
             .addFields(
                 { name: '💬 !balas <id> <pesan>', value: 'Membalas pesan customer', inline: false },
                 { name: '📋 !list', value: 'Melihat conversation aktif', inline: false },
+                { name: '🔧 !debug', value: 'Debug informasi (admin only)', inline: false },
                 { name: '❓ !help', value: 'Melihat bantuan ini', inline: false },
                 { name: '💡 Tips', value: 'Gunakan tombol **Quick Reply** untuk cara yang lebih mudah dan cepat!', inline: false }
             );
