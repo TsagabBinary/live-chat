@@ -1,17 +1,12 @@
-// index.js (Diperbaiki dengan Fastify)
+// index.js (Versi Simplified untuk Support yang Mudah)
 
-require('dotenv').config(); // Untuk memuat variabel dari .env
-const { Client, GatewayIntentBits } = require('discord.js');
-// [DIHAPUS] const express = require('express');
-// [DIHAPUS] const bodyParser = require('body-parser');
-
-// [BARU] Impor Fastify dan plugin yang dibutuhkan
-const fastify = require('fastify')({ logger: false }); // Ganti ke true jika butuh log detail
+require('dotenv').config();
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const fastify = require('fastify')({ logger: false });
 const fastifyCors = require('@fastify/cors');
-
 const { createClient } = require('@supabase/supabase-js');
 
-// Inisialisasi Discord Client (Tidak ada perubahan)
+// Inisialisasi Discord Client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -20,119 +15,288 @@ const client = new Client({
     ]
 });
 
-// Inisialisasi Supabase Client (Tidak ada perubahan)
+// Inisialisasi Supabase Client
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseAnonKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 const SUPPORT_CHANNEL_ID = '1377945895148060723';
+const PORT = process.env.PORT || 3001;
 
-// [BARU] Inisialisasi Fastify App dan registrasi plugin
-// Body parser untuk JSON sudah built-in di Fastify, tidak perlu library tambahan.
+// Storage untuk menyimpan data pesan sementara (agar mudah reply)
+const activeConversations = new Map();
+
+// Inisialisasi Fastify
 fastify.register(fastifyCors, {
-    origin: 'http://localhost:3000', // Ganti sesuai origin frontend Anda
+    origin: 'http://localhost:3000',
     methods: ['GET', 'POST', 'OPTIONS']
 });
 
-const PORT = process.env.PORT || 3001;
-
 client.once('ready', () => {
-    console.log(`Bot ${client.user.tag} sudah online!`);
+    console.log(`✅ Bot ${client.user.tag} sudah online!`);
 });
 
-// [BARU] Route '/' untuk UptimeRobot agar bot tetap aktif 24/7
+// Route untuk health check
 fastify.get('/', async (request, reply) => {
-    reply.send({ status: 'OK', message: 'Bot is alive and ready to receive API calls.' });
+    reply.send({ status: 'OK', message: 'Support Bot is running' });
 });
 
-// 1. API Endpoint untuk Menerima Pesan dari Aplikasi Electron Anda
-// [DIUBAH] Menggunakan sintaks Fastify: (request, reply)
+// API untuk menerima pesan baru dari aplikasi
 fastify.post('/api/new-message', async (request, reply) => {
-    const { conversationId, userId, messageId, messageContent, timestamp } = request.body;
+    const { conversationId, userId, messageId, messageContent, timestamp, userInfo } = request.body;
 
     if (!conversationId || !userId || !messageContent) {
-        // [DIUBAH] Menggunakan reply.code().send()
-        return reply.code(400).send({ error: 'Data tidak lengkap.' });
+        return reply.code(400).send({ error: 'Data tidak lengkap' });
     }
-
-    console.log(`Pesan diterima dari App untuk User ${userId} di Conversation ${conversationId}: ${messageContent}`);
 
     try {
         const channel = await client.channels.fetch(SUPPORT_CHANNEL_ID);
-        if (channel) {
-            await channel.send(
-                `💬 **Pesan Baru dari Aplikasi (User: ${userId})**\n` +
-                `**Conversation ID:** \`${conversationId}\`\n` +
-                `**Message ID (App):** \`${messageId}\`\n` +
-                `**Waktu (App):** ${new Date(timestamp).toLocaleString()}\n` +
-                `**Pesan:**\n>>> ${messageContent}\n\n` +
-                `🔑 Untuk membalas, gunakan command: \`!balas ${conversationId} [pesan balasan Anda]\` atau reply pesan ini.`
-            );
-            reply.code(200).send({ message: 'Pesan berhasil diteruskan ke Discord.' });
-        } else {
-            reply.code(500).send({ error: 'Channel support tidak ditemukan.' });
+        if (!channel) {
+            return reply.code(500).send({ error: 'Channel support tidak ditemukan' });
         }
+
+        // Buat embed yang lebih menarik
+        const embed = new EmbedBuilder()
+            .setColor('#0099ff')
+            .setTitle('💬 Pesan Baru dari Customer')
+            .addFields(
+                { name: '👤 User ID', value: userId, inline: true },
+                { name: '🆔 Conversation ID', value: conversationId, inline: true },
+                { name: '⏰ Waktu', value: new Date(timestamp).toLocaleString('id-ID'), inline: true },
+                { name: '📝 Pesan', value: messageContent, inline: false }
+            )
+            .setFooter({ text: `Message ID: ${messageId}` })
+            .setTimestamp();
+
+        // Tambahkan info user jika ada
+        if (userInfo) {
+            embed.addFields({ name: '📋 Info User', value: userInfo, inline: false });
+        }
+
+        // Tombol untuk memudahkan reply
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`quick_reply_${conversationId}`)
+                    .setLabel('💬 Quick Reply')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId(`close_ticket_${conversationId}`)
+                    .setLabel('✅ Tutup Tiket')
+                    .setStyle(ButtonStyle.Success)
+            );
+
+        const sentMessage = await channel.send({ 
+            embeds: [embed], 
+            components: [row] 
+        });
+
+        // Simpan data untuk memudahkan reply
+        activeConversations.set(conversationId, {
+            userId,
+            messageId: sentMessage.id,
+            timestamp: new Date(timestamp),
+            lastActivity: new Date()
+        });
+
+        console.log(`📨 Pesan baru dari User ${userId} di Conversation ${conversationId}`);
+        reply.code(200).send({ message: 'Pesan berhasil diterima' });
+
     } catch (error) {
-        console.error('Error meneruskan pesan ke Discord:', error);
-        reply.code(500).send({ error: 'Gagal meneruskan pesan ke Discord.' });
+        console.error('❌ Error:', error);
+        reply.code(500).send({ error: 'Gagal memproses pesan' });
     }
 });
 
-// 2. Mendengarkan Pesan/Command Balasan dari Tim Support di Discord
-// (Tidak ada perubahan di bagian ini)
+// Mendengarkan interaksi button
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isButton()) return;
+
+    const [action, conversationId] = interaction.customId.split('_');
+    
+    if (action === 'quick' && interaction.customId.includes('reply')) {
+        // Buat modal untuk quick reply
+        const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+        
+        const modal = new ModalBuilder()
+            .setCustomId(`reply_modal_${conversationId}`)
+            .setTitle('Quick Reply');
+
+        const replyInput = new TextInputBuilder()
+            .setCustomId('reply_content')
+            .setLabel('Pesan Balasan')
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder('Ketik balasan Anda di sini...')
+            .setRequired(true);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(replyInput);
+        modal.addComponents(firstActionRow);
+
+        await interaction.showModal(modal);
+    }
+    
+    if (action === 'close' && interaction.customId.includes('ticket')) {
+        // Tutup tiket
+        activeConversations.delete(conversationId);
+        
+        const embed = new EmbedBuilder()
+            .setColor('#00ff00')
+            .setTitle('✅ Tiket Ditutup')
+            .setDescription(`Conversation ${conversationId} telah ditutup oleh ${interaction.user.tag}`)
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
+    }
+});
+
+// Mendengarkan submit modal
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isModalSubmit()) return;
+
+    if (interaction.customId.startsWith('reply_modal_')) {
+        const conversationId = interaction.customId.replace('reply_modal_', '');
+        const replyContent = interaction.fields.getTextInputValue('reply_content');
+
+        await sendReplyToDatabase(conversationId, interaction.user.id, replyContent, interaction);
+    }
+});
+
+// Mendengarkan pesan biasa (untuk command !balas yang simple)
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (message.channel.id !== SUPPORT_CHANNEL_ID) return;
 
+    // Command !balas yang lebih simple
     if (message.content.startsWith('!balas')) {
         const args = message.content.split(' ');
-        args.shift(); // !balas
-        const targetConversationId = args.shift();
-        const replyContent = args.join(' ');
+        const conversationId = args[1];
+        const replyContent = args.slice(2).join(' ');
 
-        if (!targetConversationId || !replyContent) {
-            message.reply('Format command salah. Gunakan: `!balas <conversationId> <pesan balasan>`');
+        if (!conversationId || !replyContent) {
+            const helpEmbed = new EmbedBuilder()
+                .setColor('#ff9900')
+                .setTitle('ℹ️ Cara Menggunakan Command')
+                .setDescription('**Format:** `!balas <conversationId> <pesan>`\n\n**Contoh:** `!balas 12345 Terima kasih atas laporannya, kami akan segera menindaklanjuti.`')
+                .addFields(
+                    { name: '💡 Tips', value: 'Gunakan tombol **Quick Reply** untuk cara yang lebih mudah!' }
+                );
+            
+            message.reply({ embeds: [helpEmbed] });
             return;
         }
 
-        console.log(`Support membalas ke Conversation ${targetConversationId}: ${replyContent}`);
+        await sendReplyToDatabase(conversationId, message.author.id, replyContent, message);
+    }
 
-        try {
-            const { data, error } = await supabase
-                .from('messages')
-                .insert({
-                    conversation_id: targetConversationId,
-                    sender_id: message.author.id,
-                    sender_type: 'support_agent',
-                    content: replyContent
-                })
-                .select();
-
-            if (error) {
-                console.error('Error menyimpan balasan support ke Supabase:', error);
-                message.reply('Gagal menyimpan balasan ke database.');
-                return;
-            }
-
-            console.log('Balasan support berhasil disimpan ke Supabase:', data);
-            message.react('✅');
-
-        } catch (dbError) {
-            console.error('Error database saat memproses balasan support:', dbError);
-            message.reply('Terjadi kesalahan database saat memproses balasan.');
+    // Command !list untuk melihat conversation aktif
+    if (message.content === '!list') {
+        if (activeConversations.size === 0) {
+            message.reply('📭 Tidak ada conversation aktif saat ini.');
+            return;
         }
+
+        const embed = new EmbedBuilder()
+            .setColor('#0099ff')
+            .setTitle('📋 Conversation Aktif')
+            .setDescription('Berikut adalah daftar conversation yang sedang aktif:');
+
+        let description = '';
+        activeConversations.forEach((data, convId) => {
+            const timeDiff = Math.floor((new Date() - data.lastActivity) / (1000 * 60));
+            description += `\n🆔 **${convId}** - User: ${data.userId} (${timeDiff} menit lalu)`;
+        });
+
+        embed.setDescription(description || 'Tidak ada conversation aktif.');
+        message.reply({ embeds: [embed] });
+    }
+
+    // Command !help
+    if (message.content === '!help') {
+        const helpEmbed = new EmbedBuilder()
+            .setColor('#00ff00')
+            .setTitle('🤖 Bantuan Support Bot')
+            .setDescription('Berikut adalah command yang tersedia:')
+            .addFields(
+                { name: '💬 !balas <id> <pesan>', value: 'Membalas pesan customer', inline: false },
+                { name: '📋 !list', value: 'Melihat conversation aktif', inline: false },
+                { name: '❓ !help', value: 'Melihat bantuan ini', inline: false },
+                { name: '💡 Tips', value: 'Gunakan tombol **Quick Reply** untuk cara yang lebih mudah dan cepat!', inline: false }
+            );
+
+        message.reply({ embeds: [helpEmbed] });
     }
 });
 
-// Login Bot ke Discord
+// Fungsi untuk mengirim balasan ke database
+async function sendReplyToDatabase(conversationId, supporterId, replyContent, interaction) {
+    try {
+        const { data, error } = await supabase
+            .from('messages')
+            .insert({
+                conversation_id: conversationId,
+                sender_id: supporterId,
+                sender_type: 'support_agent',
+                content: replyContent
+            })
+            .select();
+
+        if (error) {
+            console.error('❌ Error database:', error);
+            const errorMsg = 'Gagal menyimpan balasan ke database.';
+            
+            if (interaction.isModalSubmit?.()) {
+                await interaction.reply({ content: errorMsg, ephemeral: true });
+            } else {
+                await interaction.reply(errorMsg);
+            }
+            return;
+        }
+
+        // Update last activity
+        if (activeConversations.has(conversationId)) {
+            activeConversations.get(conversationId).lastActivity = new Date();
+        }
+
+        console.log(`📤 Balasan terkirim ke Conversation ${conversationId}`);
+
+        // Buat embed konfirmasi
+        const confirmEmbed = new EmbedBuilder()
+            .setColor('#00ff00')
+            .setTitle('✅ Balasan Terkirim')
+            .addFields(
+                { name: '🆔 Conversation ID', value: conversationId, inline: true },
+                { name: '👤 Support Agent', value: `<@${supporterId}>`, inline: true },
+                { name: '📝 Pesan', value: replyContent, inline: false }
+            )
+            .setTimestamp();
+
+        if (interaction.isModalSubmit?.()) {
+            await interaction.reply({ embeds: [confirmEmbed], ephemeral: true });
+        } else {
+            await interaction.react('✅');
+            await interaction.reply({ embeds: [confirmEmbed] });
+        }
+
+    } catch (dbError) {
+        console.error('❌ Database error:', dbError);
+        const errorMsg = 'Terjadi kesalahan database.';
+        
+        if (interaction.isModalSubmit?.()) {
+            await interaction.reply({ content: errorMsg, ephemeral: true });
+        } else {
+            await interaction.reply(errorMsg);
+        }
+    }
+}
+
+// Login Bot
 client.login(process.env.DISCORD_BOT_TOKEN);
 
-// [BARU] Struktur untuk menjalankan server Fastify
+// Start Fastify Server
 const startServer = async () => {
     try {
-        // Penting untuk hosting seperti Glitch/Replit agar listen di semua interface
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
-        console.log(`API Bot dengan Fastify berjalan di port ${PORT}`);
+        console.log(`🚀 Support Bot API berjalan di port ${PORT}`);
     } catch (err) {
         fastify.log.error(err);
         process.exit(1);
